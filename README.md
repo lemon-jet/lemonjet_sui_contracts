@@ -1,47 +1,111 @@
 # LemonJet Sui Contracts
 
-This project contains the Sui Move contracts for LemonJet, a decentralized gaming application.
+LemonJet is a Sui-based game of chance where players stake SUI (or any supported coin type) against configurable payout coefficients. The Move contracts in this repository keep the full game loop on-chain: player registration, vault liquidity management, game execution, referral rewards, and points-based loyalty incentives.
 
-## Overview
+## Project Snapshot
 
-LemonJet is a simple and fair game of chance where players can bet their Sui tokens and have a chance to win a payout based on a chosen coefficient. The contracts are designed to be transparent and secure, with all game logic and fund management handled on-chain.
+- **Language**: [Move](https://docs.sui.io/concepts/move)
+- **Target Network**: Sui Devnet/Testnet/Mainnet
+- **Key Features**:
+  - Deterministic and auditable `play` flow driven by Sui randomness.
+  - Vault share system with fees, admin dividends, and referral rewards.
+  - Player registry that supports optional referrer names.
+  - Points program that mints an on-chain loyalty token and tracks campaign volume.
 
-The project is divided into three main modules:
+## Getting Started
 
-*   **`lemonjet`**: The main game logic, including the `play` function.
-*   **`vault`**: The contract that manages the game's funds, allowing users to deposit and withdraw assets.
-*   **`shares`**: A utility contract for managing shares in the vault.
+### Prerequisites
 
-## Modules
+Install the Sui CLI toolchain (includes Move compiler and simulator). Follow the official setup guide:
 
-### `lemonjet`
+```bash
+curl -fsSL https://install.sui.io | sh
+sui client active-address            # verify installation
+```
 
-This module contains the core game logic. The main function is `play`, which takes the following arguments:
+Ensure your environment is configured for the target network (Devnet/Testnet/Mainnet) by running `sui client switch --env <ENV>`.
 
-*   `random`: A `Random` object for generating random numbers.
-*   `stake`: The amount of tokens to bet.
-*   `coef`: The desired payout coefficient.
-*   `vault`: The `Vault` object to use for the game.
-*   `ctx`: The transaction context.
+### Build & Test
 
-The `play` function generates a random number and compares it to a threshold calculated from the `coef`. If the random number is less than or equal to the threshold, the player wins and receives a payout.
+From the repository root:
 
-### `vault`
+```bash
+sui move build                       # type checking and bytecode generation
+sui move test                        # run Move unit tests
+```
 
-This module defines a `Vault` that holds the game's assets. The vault allows users to deposit and withdraw funds, and it also manages the minting and burning of shares. The vault has a fee mechanism that collects a small percentage of each bet.
+The tests include coverage for referral reward bookkeeping in the points module.
 
-### `shares`
+### Deploying
 
-This module defines a `Shares` object that represents a share in the vault. The `Shares` object can be used to redeem assets from the vault.
+1. **Publish the package** on the desired network:
+   ```bash
+   sui client publish --gas-budget <BUDGET>
+   ```
+2. **Record the published package ID**. You will need it to invoke entry functions.
+3. **Run initial setup** (see the flow below) using `sui client call`.
 
-## Usage
+> 💡 These contracts are generic over the staked coin type `T`. When deploying to mainnet, publish an instance per supported asset or wrap the vault in a front-end router.
 
-To play the game, you need to call the `play` function in the `lemonjet` module. You will need to provide a `Random` object, the amount of tokens you want to bet, the desired payout coefficient, and the `Vault` object.
+## Core Modules
 
-To deposit funds into the vault, you can call the `deposit` function in the `vault` module. This will mint you a corresponding amount of shares.
+| Module | Purpose |
+| ------ | ------- |
+| `admin` | Mints an `AdminCap` that authorises vault/points configuration. |
+| `player` | Maintains player objects, optional referrers, and name registry. |
+| `lemonjet` | Implements the game loop, fee logic, and outcome events. |
+| `vault` | Manages liquidity, share minting/burning, admin dividends, and payouts. |
+| `points` | Sets up the loyalty program, tracks play volume, and mints POINTS tokens. |
 
-To withdraw funds from the vault, you can call the `redeem` function in the `vault` module. This will burn your shares and return you the corresponding amount of assets.
+The relevant source files live under `sources/`. `Move.toml` defines package metadata and dependencies.
+
+## Typical Workflow
+
+1. **Admin initialisation**
+   - Call `admin::init` to create the `AdminCap`.
+   - With the cap, invoke `vault::create<T>` to deploy a vault for the chosen coin type.
+   - With the cap, run `points::setup<T>` to configure loyalty caps and cadence.
+
+2. **Player onboarding**
+   - Share objects `player::PlayerRegistry` and `player::NameRegistry` by calling `player::init` once after publish.
+   - Players register via `player::create` (optionally referencing an existing player address) or `player::create_by_name`.
+
+3. **Game play**
+   - Players fund the vault using `vault::deposit<T>` to mint vault shares.
+   - A front end requests randomness and calls `lemonjet::play_and_earn_points_(...)` with the desired coefficient.
+   - The function records stake volume, awards referral shares, deducts house fees, and emits an `Outcome` event.
+
+4. **Rewards and exits**
+   - Players redeem liquidity with `vault::redeem<T>` (exit fees fund rewards).
+   - Referral accounts claim accumulated vault shares through `vault::claim*`.
+   - Volume rewards are collected with `points::claim_ref_volume` followed by `points::claim` to mint POINTS tokens.
+   - Admins harvest dividends with `vault::admin_claim*` and rotate points cycles using `points::next_cycle`.
+
+## Configuration Highlights
+
+- **House edge** in `lemonjet::HOUSE_EDGE` defaults to 1%.
+- **Coefficient bounds** are enforced between `1.01x` and `50x` (`coef` is expressed in basis points with two decimals).
+- **Vault limits**: `vault::max_payout` caps single-win exposure using the stored liquidity and a golden-ratio heuristic.
+- **Referral rewards**: 30% of the house fee is allocated to the referrer; 20% mints admin shares; remaining fees stay in the vault.
+- **Points cycle**: Controlled by `points::Config` (point capacity and interval). Completed cycles snapshot volumes into `RateRegistry`.
+
+## Repository Structure
+
+```
+.
+├── Move.toml            # Package manifest and dependency declarations
+├── Move.lock            # Locked dependency versions
+├── README.md            # Project documentation (this file)
+├── build/               # Build artifacts (generated by Sui CLI)
+└── sources/             # Move modules
+```
+
+## Development Tips
+
+- Use `sui client call --function ... --module ...` for manual testing against a local sandbox or testnet.
+- Enable verbose test output with `sui move test --verbose 2` when debugging complex scenarios.
+- When adding new modules, register them in `Move.toml` and ensure entry functions validate versioning like existing modules.
 
 ## Disclaimer
 
-This is a proof of concept and has not been audited. Use at your own risk.
+These contracts are unaudited and are provided for research and experimentation only. Deploy to production at your own risk.
